@@ -132,6 +132,10 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                     log.trace("Applying Remote Candidate for {}: {}", Long.toUnsignedString(connectionId), data);
                     try {
                         pc.addIceCandidate(new RTCIceCandidate("0", 0, data));
+                        // The candidate carries the peer's address. Feed it to the channel, otherwise
+                        // the child keeps the wildcard 0.0.0.0:0 it was constructed with and nothing
+                        // downstream can tell one NetherNet peer from another.
+                        child.updateRemoteAddress(parseCandidateAddress(data), candidateRank(data));
                     } catch (Exception e) {
                         log.debug("Failed to apply ICE candidate for {} (Connection likely closed): {}", Long.toUnsignedString(connectionId), e.toString());
                     }
@@ -178,6 +182,64 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     /**
      * Observer to handle Data Channel creation from the client.
      */
+    /**
+     * Extracts the address from an ICE candidate SDP line.
+     * <p>
+     * The format is fixed by RFC 5245: {@code candidate:<foundation> <component> <transport>
+     * <priority> <ip> <port> typ <type> ...}, so the address is field 4 and the port field 5 after
+     * the "candidate:" prefix.
+     * <p>
+     * "relay" is a TURN server rather than the peer, so it is skipped entirely; see
+     * {@link #candidateRank(String)} for how the remaining types are prioritised.
+     *
+     * @return the parsed address, or null if this candidate carries no useful one.
+     */
+    private static InetSocketAddress parseCandidateAddress(String candidateSdp) {
+        if (candidateSdp == null) {
+            return null;
+        }
+        int start = candidateSdp.indexOf("candidate:");
+        if (start < 0) {
+            return null;
+        }
+        String[] parts = candidateSdp.substring(start + "candidate:".length()).trim().split("\\s+");
+        if (parts.length < 8 || !"typ".equals(parts[6])) {
+            return null;
+        }
+        // A relay candidate is the TURN server's address, never the peer's.
+        if ("relay".equals(parts[7])) {
+            return null;
+        }
+        try {
+            return new InetSocketAddress(parts[4], Integer.parseInt(parts[5]));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Ranks a candidate by how meaningful its address is to this server.
+     * <p>
+     * "srflx" is the peer's public address as seen through NAT and is what a remote server should
+     * record; "host" is the peer's own LAN address, which is only useful when it really is on the
+     * same network and is frequently a duplicate-prone 192.168.x.x.
+     */
+    private static int candidateRank(String candidateSdp) {
+        if (candidateSdp == null) {
+            return -1;
+        }
+        if (candidateSdp.contains(" typ srflx")) {
+            return 2;
+        }
+        if (candidateSdp.contains(" typ prflx")) {
+            return 1;
+        }
+        if (candidateSdp.contains(" typ host")) {
+            return 0;
+        }
+        return -1;
+    }
+
     private class ServerPeerConnectionObserver implements PeerConnectionObserver {
         private final long connectionId;
         private final String remoteNetworkId;

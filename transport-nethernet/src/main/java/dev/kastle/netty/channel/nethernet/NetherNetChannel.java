@@ -39,6 +39,34 @@ public abstract class NetherNetChannel extends AbstractChannel {
 
     protected volatile boolean open = true;
 
+    /** Rank of the ICE candidate the current remoteAddress came from; higher wins. */
+    private volatile int remoteAddressRank = -1;
+
+    /**
+     * Updates the peer address once ICE has told us where the remote actually is.
+     * <p>
+     * A child channel is constructed before any candidate has been exchanged, so its remote address
+     * starts out as the wildcard 0.0.0.0:0. Without this, everything downstream - logging, proxy
+     * protocol forwarding, per-IP rate limiting, anti-VPN checks - sees every NetherNet peer as
+     * 0.0.0.0 and cannot tell them apart.
+     * <p>
+     * Candidates arrive in bursts and in no useful order, with "host" (the peer's LAN address)
+     * usually first. Ranking rather than last-write-wins is what stops a later host candidate from
+     * clobbering the public address we actually want.
+     *
+     * @param remote the address parsed from the remote ICE candidate.
+     * @param rank   higher for more externally meaningful candidate types.
+     */
+    public void updateRemoteAddress(InetSocketAddress remote, int rank) {
+        if (remote == null || remote.getAddress() == null || remote.getAddress().isAnyLocalAddress()) {
+            return;
+        }
+        if (rank >= this.remoteAddressRank) {
+            this.remoteAddressRank = rank;
+            this.remoteAddress = remote;
+        }
+    }
+
     protected NetherNetChannel(Channel parent, InetSocketAddress remote, InetSocketAddress local) {
         super(parent);
         this.remoteAddress = remote;

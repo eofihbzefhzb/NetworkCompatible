@@ -1,5 +1,9 @@
+# JitPack builds this repo on demand so forks of Geyser can depend on it without
+# publishing to Maven Central (which needs the dev.kastle namespace and a PGP key).
+#
+# The build targets Java 8 bytecode but the Gradle build itself needs a modern JDK.
 jdk:
   - openjdk21
 before_install:
-  - sdk install java 21.0.4-tem
-  - sdk use java 21.0.4-tem
+  - sdk install java 21.0.5-tem
+  - sdk use java 21.0.5-tem

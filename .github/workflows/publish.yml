@@ -1,11 +1,10 @@
 name: Publish
 
+# Upstream's Maven Central release flow. It needs Sonatype credentials, a PGP key, and
+# ownership of the dev.kastle namespace, none of which a fork has, and its release steps
+# are gated on github.repository == 'Kas-tle/NetworkCompatible' anyway. Manual-only here
+# so a push does not start a publish that can only fail.
 on:
-  push:
-    branches:
-      - 'master'
-    paths:
-      - 'gradle.properties'
   workflow_dispatch:
 
 jobs:

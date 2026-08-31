@@ -39,7 +39,7 @@ public abstract class NetherNetChannel extends AbstractChannel {
 
     protected volatile boolean open = true;
 
-    /** Rank of the ICE candidate the current remoteAddress came from; higher wins. */
+    /** Rank of the ICE candidate the current remoteAddress came from; higher or equal wins. */
     private volatile int remoteAddressRank = -1;
 
     /**
@@ -54,10 +54,15 @@ public abstract class NetherNetChannel extends AbstractChannel {
      * usually first. Ranking rather than last-write-wins is what stops a later host candidate from
      * clobbering the public address we actually want.
      *
+     * Synchronized because the rank check and the two assignments are a read-modify-write across
+     * two fields: candidates that arrive concurrently could otherwise interleave so that a lower
+     * ranked one is applied last, which is exactly the wrong address this method exists to avoid.
+     *
      * @param remote the address parsed from the remote ICE candidate.
-     * @param rank   higher for more externally meaningful candidate types.
+     * @param rank   higher for more externally meaningful candidate types; on a tie the most
+     *               recent candidate wins, since two candidates of one type are equally valid.
      */
-    public void updateRemoteAddress(InetSocketAddress remote, int rank) {
+    public synchronized void updateRemoteAddress(InetSocketAddress remote, int rank) {
         if (remote == null || remote.getAddress() == null || remote.getAddress().isAnyLocalAddress()) {
             return;
         }

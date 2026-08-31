@@ -180,9 +180,6 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     }
 
     /**
-     * Observer to handle Data Channel creation from the client.
-     */
-    /**
      * Extracts the address from an ICE candidate SDP line.
      * <p>
      * The format is fixed by RFC 5245: {@code candidate:<foundation> <component> <transport>
@@ -210,11 +207,38 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         if ("relay".equals(parts[7])) {
             return null;
         }
+        // Literal addresses only. WebRTC also emits mDNS candidates ("<uuid>.local") that hide the
+        // peer's LAN address behind a name; new InetSocketAddress(host, port) would try to resolve
+        // those, blocking this signaling callback on a DNS lookup that can never tell a remote
+        // server anything useful anyway.
+        if (!isLiteralAddress(parts[4])) {
+            return null;
+        }
         try {
             return new InetSocketAddress(parts[4], Integer.parseInt(parts[5]));
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    /**
+     * @return true for an IPv4 or IPv6 literal, false for anything that would need name resolution.
+     */
+    private static boolean isLiteralAddress(String host) {
+        if (host == null || host.isEmpty()) {
+            return false;
+        }
+        // In an ICE candidate line only an IPv6 literal can carry a colon.
+        if (host.indexOf(':') >= 0) {
+            return true;
+        }
+        for (int i = 0; i < host.length(); i++) {
+            char c = host.charAt(i);
+            if ((c < '0' || c > '9') && c != '.') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -240,6 +264,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         return -1;
     }
 
+    /**
+     * Observer to handle Data Channel creation from the client.
+     */
     private class ServerPeerConnectionObserver implements PeerConnectionObserver {
         private final long connectionId;
         private final String remoteNetworkId;

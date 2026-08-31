@@ -1,0 +1,69 @@
+name: Tag Version
+
+# Creates the git tag from gradle.properties whenever the version changes on master.
+#
+# JitPack serves the artifact under the tag name, and Geyser resolves it by that exact
+# string in gradle/libs.versions.toml. A forgotten tag is therefore silent: Geyser keeps
+# building against the previous transport and the change simply never ships. Tagging here
+# means bumping `version=` is the only manual step, which matters because commits are made
+# through GitHub Desktop, which cannot create tags.
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'gradle.properties'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Needed so the existing tags are present locally and the check below is meaningful.
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cat gradle.properties | grep version= | cut -d'=' -f2)" >> $GITHUB_OUTPUT
+
+      - name: Check whether the tag already exists
+        id: check
+        run: |
+          if git rev-parse "refs/tags/${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag ${{ steps.version.outputs.version }} already exists - nothing to do."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Tag ${{ steps.version.outputs.version }} will be created."
+          fi
+
+      - name: Create and push the tag
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
+      - name: Create the release
+        if: steps.check.outputs.exists == 'false'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          allowUpdates: true
+          body: |
+            JitPack builds this tag on demand; there is no artifact to upload here.
+
+            Consume it from Geyser by setting the version in `gradle/libs.versions.toml`
+            to the tag name:
+
+            ```toml
+            nethernet = "${{ steps.version.outputs.version }}"
+            ```
+          token: ${{ secrets.GITHUB_TOKEN }}

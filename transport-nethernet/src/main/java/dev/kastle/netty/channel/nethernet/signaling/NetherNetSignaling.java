@@ -34,6 +34,21 @@ public interface NetherNetSignaling extends AutoCloseable {
     String getLocalNetworkId();
 
     /**
+     * Whether this signaling link is still usable.
+     * <p>
+     * An Xbox signaling websocket can drop at any time - a network blip, or Xbox closing an idle
+     * connection - and nothing here reconnects it. The owner of a server channel has no other way
+     * to notice: no offers simply stop arriving, which is indistinguishable from a quiet server.
+     * Implementations backed by a persistent connection must report its real state so the owner can
+     * rebind; implementations without one keep the default.
+     *
+     * @return true if signals can still be exchanged.
+     */
+    default boolean isConnected() {
+        return true;
+    }
+
+    /**
      * Closes the signaling channel and releases any associated resources.
      */
     @Override

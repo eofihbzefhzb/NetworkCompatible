@@ -195,6 +195,14 @@ public abstract class AbstractNetherNetXboxSignaling extends SimpleChannelInboun
     }
 
     @Override
+    public boolean isConnected() {
+        // channelInactive() nulls the field, so this covers both a closed channel and one that was
+        // never established. Read once: the field is written from the event loop.
+        Channel current = this.channel;
+        return current != null && current.isActive();
+    }
+
+    @Override
     public void close() {
         if (channel != null) channel.close();
         eventLoopGroup.shutdownGracefully();

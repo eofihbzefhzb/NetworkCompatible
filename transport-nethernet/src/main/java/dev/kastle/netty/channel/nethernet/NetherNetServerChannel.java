@@ -39,6 +39,14 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
     private final DefaultNetherServerChannelConfig config;
     private final PeerConnectionFactory factory;
+    /**
+     * Whether this channel created the factory, and may therefore free its native handle on close.
+     * <p>
+     * A caller that supplies its own factory keeps ownership: the peer connections opened through it
+     * outlive this server channel, so disposing it here would free native memory still in use, and
+     * would do it again after the owner had already disposed it.
+     */
+    private final boolean ownsFactory;
     private final NetherNetServerSignaling signaling;
     
     private InetSocketAddress localAddress;
@@ -52,7 +60,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * @param signaling The NetherNetServerSignaling instance for signaling.
      */
     public NetherNetServerChannel(NetherNetServerSignaling signaling) {
-        this(new PeerConnectionFactory(), signaling);
+        this(new PeerConnectionFactory(), signaling, true);
     }
 
     /**
@@ -62,7 +70,12 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      * @param signaling The NetherNetServerSignaling instance for signaling.
      */
     public NetherNetServerChannel(PeerConnectionFactory factory, NetherNetServerSignaling signaling) {
+        this(factory, signaling, false);
+    }
+
+    private NetherNetServerChannel(PeerConnectionFactory factory, NetherNetServerSignaling signaling, boolean ownsFactory) {
         this.factory = factory;
+        this.ownsFactory = ownsFactory;
         this.signaling = signaling;
         this.config = new DefaultNetherServerChannelConfig(this);
         try {
@@ -361,7 +374,9 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         try {
             signaling.close();
         } finally {
-            factory.dispose();
+            if (ownsFactory) {
+                factory.dispose();
+            }
         }
     }
 

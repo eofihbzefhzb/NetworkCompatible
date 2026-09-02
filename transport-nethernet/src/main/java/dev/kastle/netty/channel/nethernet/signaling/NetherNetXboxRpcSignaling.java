@@ -205,9 +205,27 @@ public class NetherNetXboxRpcSignaling extends AbstractNetherNetXboxSignaling {
         if (channel != null && channel.isActive()) {
             channel.writeAndFlush(new TextWebSocketFrame(gson.toJson(rpc)));
         } else {
+            // Drop it back out of the map first: no reply can ever arrive for a request that was
+            // never sent, so leaving the entry there would keep the future alive for the life of
+            // this signaling instance.
+            pendingRequests.remove(id);
             future.completeExceptionally(new ClosedChannelException());
         }
         return future;
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        // Every request still awaiting a reply when the websocket drops would otherwise stay in the
+        // map forever - and its caller would wait on a future that can never complete. Neither the
+        // map nor the callers are cleaned up anywhere else.
+        ClosedChannelException cause = new ClosedChannelException();
+        for (Map.Entry<String, CompletableFuture<JsonObject>> entry : pendingRequests.entrySet()) {
+            if (pendingRequests.remove(entry.getKey()) != null) {
+                entry.getValue().completeExceptionally(cause);
+            }
+        }
+        super.channelInactive(ctx);
     }
 
     private void sendJsonRpcResult(JsonElement id, JsonElement result) {

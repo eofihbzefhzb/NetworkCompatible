@@ -56,22 +56,6 @@ public abstract class NetherNetChannel extends AbstractChannel {
 
     private final Object assemblyLock = new Object();
 
-    /**
-     * Scratch buffer for outbound segments, reused across every write on this channel.
-     * <p>
-     * Each segment used to get its own allocateDirect, so a server sending twenty packets a second
-     * to each of its players churned through a direct allocation per packet per player - the
-     * expensive kind, since every one registers a Cleaner and counts against the direct memory
-     * limit. One buffer of the maximum segment size per channel replaces all of that, and is safe
-     * to reuse because RTCDataChannel.send() hands the bytes to native code synchronously and does
-     * not keep the buffer afterwards.
-     * <p>
-     * Only ever touched from doWrite() on the event loop, so unlike the assembly buffer it needs no
-     * lock. It is plain heap-tracked direct memory reclaimed by the GC once the channel is
-     * unreachable, so there is nothing to release in doClose().
-     */
-    private ByteBuffer sendBuf;
-
     /** Rank of the ICE candidate the current remoteAddress came from; higher or equal wins. */
     private volatile int remoteAddressRank = -1;
 
@@ -256,16 +240,13 @@ public abstract class NetherNetChannel extends AbstractChannel {
                 int remaining = segments - 1 - i;
                 int chunkSize = Math.min(maxPayload, framed.readableBytes() - offset);
 
-                if (this.sendBuf == null) {
-                    this.sendBuf = ByteBuffer.allocateDirect(NetherNetConstants.MAX_SCTP_MESSAGE_SIZE);
-                }
-
-                ByteBuffer chunk = this.sendBuf;
-                chunk.clear();
+                // Sized to this exact segment, and never pooled or reused: send() hands a direct
+                // buffer straight to native code with no length, so the native side takes the
+                // buffer's capacity as the payload length and ignores position and limit. A
+                // larger buffer holding a shorter segment is therefore sent with trailing garbage,
+                // which corrupts the peer's reassembly and drops the connection.
+                ByteBuffer chunk = ByteBuffer.allocateDirect(1 + chunkSize);
                 chunk.put((byte) remaining);
-                // Cap the limit at this segment's size: getBytes fills the destination up to its
-                // limit, which on a reused full size buffer would otherwise overrun the source.
-                chunk.limit(1 + chunkSize);
 
                 framed.getBytes(offset, chunk);
                 chunk.position(chunk.limit());

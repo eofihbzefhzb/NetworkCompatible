@@ -39,6 +39,23 @@ public abstract class NetherNetChannel extends AbstractChannel {
 
     protected volatile boolean open = true;
 
+    /**
+     * Reassembly buffer for inbound segmented messages, held here rather than inside the data
+     * channel observer so that doClose() can hand it back to the allocator.
+     * <p>
+     * It used to live in the anonymous observer, where clear() reset it but nothing ever released
+     * it: with Netty's pooled allocator that meant one buffer per peer never returned to the pool,
+     * for the life of the process.
+     * <p>
+     * Guarded by {@link #assemblyLock} because inbound messages are delivered on the native WebRTC
+     * thread while doClose() runs on the event loop. Releasing it unguarded would leave a window in
+     * which a late message writes into memory the allocator has already handed to another
+     * connection, which is a far worse failure than the leak this replaces.
+     */
+    private ByteBuf assemblyBuf;
+
+    private final Object assemblyLock = new Object();
+
     /** Rank of the ICE candidate the current remoteAddress came from; higher or equal wins. */
     private volatile int remoteAddressRank = -1;
 
@@ -82,8 +99,15 @@ public abstract class NetherNetChannel extends AbstractChannel {
         this.reliableChannel = reliable;
         this.unreliableChannel = unreliable;
 
+        synchronized (this.assemblyLock) {
+            // Skip the allocation if the peer already went away mid-handshake; doClose() has run
+            // and nothing would ever release a buffer created after it.
+            if (this.open) {
+                this.assemblyBuf = config.getAllocator().buffer();
+            }
+        }
+
         RTCDataChannelObserver observer = new RTCDataChannelObserver() {
-            private final ByteBuf assemblyBuf = config.getAllocator().buffer();
             private int currentSegmentCount = -1;
 
             @Override
@@ -101,41 +125,49 @@ public abstract class NetherNetChannel extends AbstractChannel {
                 if (!data.hasRemaining())
                     return;
 
-                int segments = data.get() & 0xFF;
-
-                if (currentSegmentCount == -1) {
-                    currentSegmentCount = segments;
-                } else {
-                    if (segments != currentSegmentCount - 1) {
-                        assemblyBuf.clear();
-                        currentSegmentCount = -1;
+                synchronized (assemblyLock) {
+                    ByteBuf assembly = assemblyBuf;
+                    // Null once the channel is closed: drop anything the native thread still
+                    // delivers rather than touching a buffer that has gone back to the pool.
+                    if (assembly == null)
                         return;
-                    }
-                    currentSegmentCount = segments;
-                }
 
-                if (data.hasRemaining()) {
-                    byte[] payload = new byte[data.remaining()];
-                    data.get(payload);
-                    assemblyBuf.writeBytes(payload);
-                }
+                    int segments = data.get() & 0xFF;
 
-                if (segments == 0) {
-                    try {
-                        if (assemblyBuf.isReadable()) {
-                            ByteBuf packet = assemblyBuf.copy();
-                            assemblyBuf.skipBytes(assemblyBuf.readableBytes());
-
-                            eventLoop().execute(() -> {
-                                pipeline().fireChannelRead(packet);
-                                pipeline().fireChannelReadComplete();
-                            });
+                    if (currentSegmentCount == -1) {
+                        currentSegmentCount = segments;
+                    } else {
+                        if (segments != currentSegmentCount - 1) {
+                            assembly.clear();
+                            currentSegmentCount = -1;
+                            return;
                         }
-                    } catch (Exception e) {
-                        log.error("Error processing packet", e);
-                    } finally {
-                        assemblyBuf.clear();
-                        currentSegmentCount = -1;
+                        currentSegmentCount = segments;
+                    }
+
+                    if (data.hasRemaining()) {
+                        byte[] payload = new byte[data.remaining()];
+                        data.get(payload);
+                        assembly.writeBytes(payload);
+                    }
+
+                    if (segments == 0) {
+                        try {
+                            if (assembly.isReadable()) {
+                                ByteBuf packet = assembly.copy();
+                                assembly.skipBytes(assembly.readableBytes());
+
+                                eventLoop().execute(() -> {
+                                    pipeline().fireChannelRead(packet);
+                                    pipeline().fireChannelReadComplete();
+                                });
+                            }
+                        } catch (Exception e) {
+                            log.error("Error processing packet", e);
+                        } finally {
+                            assembly.clear();
+                            currentSegmentCount = -1;
+                        }
                     }
                 }
             }
@@ -262,6 +294,14 @@ public abstract class NetherNetChannel extends AbstractChannel {
         Object msg;
         while ((msg = pendingWrites.poll()) != null) {
             ReferenceCountUtil.release(msg);
+        }
+
+        synchronized (this.assemblyLock) {
+            ByteBuf assembly = this.assemblyBuf;
+            this.assemblyBuf = null;
+            if (assembly != null) {
+                assembly.release();
+            }
         }
     }
 

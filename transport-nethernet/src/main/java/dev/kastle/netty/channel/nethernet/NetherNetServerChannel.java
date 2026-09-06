@@ -127,8 +127,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         ScheduledFuture<?> timeoutTask = eventLoop().schedule(() -> {
             if (!child.isActive()) {
                 log.warn("Connection {} timed out during handshake ({}s)", Long.toUnsignedString(connectionId), handshakeTimeoutSeconds);
+                // close() alone. The child owns this same RTCPeerConnection and closes it in
+                // doClose(), so closing it again here freed the native object twice and corrupted
+                // the process heap - a crash Windows reports as 0xc0000374 in ntdll, with no Java
+                // exception and no hs_err file, which is why it looked like the JVM simply vanished.
                 child.close();
-                pc.close();
             }
         }, handshakeTimeoutSeconds, TimeUnit.SECONDS);
         observer.setHandshakeTimeout(timeoutTask);

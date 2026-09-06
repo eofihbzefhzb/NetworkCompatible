@@ -293,7 +293,10 @@ public abstract class NetherNetChannel extends AbstractChannel {
             unreliableChannel.close();
         }
         if (peerConnection != null) {
+            // Cleared after closing so a second pass through here, or any other path that still
+            // holds this channel, cannot free the same native object twice.
             peerConnection.close();
+            peerConnection = null;
         }
 
         Object msg;

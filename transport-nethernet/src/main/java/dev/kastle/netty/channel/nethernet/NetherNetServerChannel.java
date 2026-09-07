@@ -26,7 +26,6 @@ import io.netty.channel.EventLoop;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.jose4j.lang.JoseException;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -174,16 +173,23 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                         pc.setLocalDescription(description, new SetSessionDescriptionObserver() {
                             @Override
                             public void onSuccess() {
-                                log.trace("Sending Answer SDP for {}", Long.toUnsignedString(connectionId));
+                                // Nothing may escape this method. It is invoked by native WebRTC
+                                // code, and a Java exception left pending on the way back into C++
+                                // takes the whole process down with a fail-fast abort rather than a
+                                // stack trace. sendSignal throws as soon as the signaling channel
+                                // drops, which is precisely what a flapping connection produces.
                                 try {
+                                    log.trace("Sending Answer SDP for {}", Long.toUnsignedString(connectionId));
                                     signaling.sendSignal(
                                         remoteNetworkId,
                                         NetherNetConstants.buildSignalConnectResponse(connectionId, serverIdentity.augmentAnswer(description.sdp))
                                     );
-                                } catch (JoseException e) {
-                                    throw new RuntimeException(e);
+                                    pipeline().fireChannelRead(child);
+                                } catch (Throwable throwable) {
+                                    log.warn("Could not answer connection {}, dropping it: {}",
+                                        Long.toUnsignedString(connectionId), throwable.toString());
+                                    child.close();
                                 }
-                                pipeline().fireChannelRead(child);
                             }
                             @Override public void onFailure(String error) { log.error("SetLocalDesc failed: {}", error); }
                         });
@@ -309,14 +315,22 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
         @Override
         public void onIceCandidate(RTCIceCandidate candidate) {
-            if (log.isTraceEnabled()) {
-                log.trace("Generated ICE Candidate for {}: {} (Type: {})", 
-                    Long.toUnsignedString(this.connectionId), candidate.sdp, extractCandidateType(candidate.sdp));
+            // Also a native callback, and the one that fires most often: candidates keep being
+            // generated after the signaling channel has dropped. Losing one costs a single
+            // connection path, letting the exception out costs the process.
+            try {
+                if (log.isTraceEnabled()) {
+                    log.trace("Generated ICE Candidate for {}: {} (Type: {})",
+                        Long.toUnsignedString(this.connectionId), candidate.sdp, extractCandidateType(candidate.sdp));
+                }
+                signaling.sendSignal(
+                    remoteNetworkId,
+                    NetherNetConstants.buildSignalCandidateAdd(connectionId, candidate.sdp)
+                );
+            } catch (Throwable throwable) {
+                log.debug("Could not send an ICE candidate for {}: {}",
+                    Long.toUnsignedString(this.connectionId), throwable.toString());
             }
-            signaling.sendSignal(
-                remoteNetworkId, 
-                NetherNetConstants.buildSignalCandidateAdd(connectionId, candidate.sdp)
-            );
         }
 
         private String extractCandidateType(String sdp) {

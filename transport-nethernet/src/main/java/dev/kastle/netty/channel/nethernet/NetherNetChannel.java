@@ -116,11 +116,29 @@ public abstract class NetherNetChannel extends AbstractChannel {
 
             @Override
             public void onStateChange() {
-                eventLoop().execute(() -> onDataChannelStateChange());
+                // Native callback. An event loop that is shutting down rejects the task, and that
+                // rejection must not travel back into C++ - see the note on onMessage below.
+                try {
+                    eventLoop().execute(() -> onDataChannelStateChange());
+                } catch (Throwable throwable) {
+                    log.debug("Could not handle a data channel state change: {}", throwable.toString());
+                }
             }
 
             @Override
             public void onMessage(RTCDataChannelBuffer buffer) {
+                // Everything this method does is contained. It is invoked by native WebRTC code,
+                // and a Java exception left pending on the way back into C++ fail-fasts the whole
+                // process instead of raising a stack trace. Dropping one inbound message is the
+                // right trade against losing the server.
+                try {
+                    onMessageInternal(buffer);
+                } catch (Throwable throwable) {
+                    log.debug("Dropped an inbound NetherNet message: {}", throwable.toString());
+                }
+            }
+
+            private void onMessageInternal(RTCDataChannelBuffer buffer) {
                 ByteBuffer data = buffer.data;
                 if (!data.hasRemaining())
                     return;

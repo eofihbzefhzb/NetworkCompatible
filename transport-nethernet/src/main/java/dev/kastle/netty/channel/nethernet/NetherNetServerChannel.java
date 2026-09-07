@@ -166,36 +166,49 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         pc.setRemoteDescription(new RTCSessionDescription(RTCSdpType.OFFER, offerSdp), new SetSessionDescriptionObserver() {
             @Override
             public void onSuccess() {
-                log.trace("Remote description set for {}", Long.toUnsignedString(connectionId));
-                pc.createAnswer(new RTCAnswerOptions(), new CreateSessionDescriptionObserver() {
-                    @Override
-                    public void onSuccess(RTCSessionDescription description) {
-                        pc.setLocalDescription(description, new SetSessionDescriptionObserver() {
-                            @Override
-                            public void onSuccess() {
-                                // Nothing may escape this method. It is invoked by native WebRTC
-                                // code, and a Java exception left pending on the way back into C++
-                                // takes the whole process down with a fail-fast abort rather than a
-                                // stack trace. sendSignal throws as soon as the signaling channel
-                                // drops, which is precisely what a flapping connection produces.
-                                try {
-                                    log.trace("Sending Answer SDP for {}", Long.toUnsignedString(connectionId));
-                                    signaling.sendSignal(
-                                        remoteNetworkId,
-                                        NetherNetConstants.buildSignalConnectResponse(connectionId, serverIdentity.augmentAnswer(description.sdp))
-                                    );
-                                    pipeline().fireChannelRead(child);
-                                } catch (Throwable throwable) {
-                                    log.warn("Could not answer connection {}, dropping it: {}",
-                                        Long.toUnsignedString(connectionId), throwable.toString());
-                                    child.close();
+                // Native callback, like every observer method below it.
+                try {
+                    log.trace("Remote description set for {}", Long.toUnsignedString(connectionId));
+                    pc.createAnswer(new RTCAnswerOptions(), new CreateSessionDescriptionObserver() {
+                        @Override
+                        public void onSuccess(RTCSessionDescription description) {
+                            try {
+                                pc.setLocalDescription(description, new SetSessionDescriptionObserver() {
+                                @Override
+                                public void onSuccess() {
+                                    // Nothing may escape this method. It is invoked by native WebRTC
+                                    // code, and a Java exception left pending on the way back into C++
+                                    // takes the whole process down with a fail-fast abort rather than a
+                                    // stack trace. sendSignal throws as soon as the signaling channel
+                                    // drops, which is precisely what a flapping connection produces.
+                                    try {
+                                        log.trace("Sending Answer SDP for {}", Long.toUnsignedString(connectionId));
+                                        signaling.sendSignal(
+                                            remoteNetworkId,
+                                            NetherNetConstants.buildSignalConnectResponse(connectionId, serverIdentity.augmentAnswer(description.sdp))
+                                        );
+                                        pipeline().fireChannelRead(child);
+                                    } catch (Throwable throwable) {
+                                        log.warn("Could not answer connection {}, dropping it: {}",
+                                            Long.toUnsignedString(connectionId), throwable.toString());
+                                        child.close();
+                                    }
                                 }
+                                @Override public void onFailure(String error) { log.error("SetLocalDesc failed: {}", error); }
+                                });
+                            } catch (Throwable throwable) {
+                                log.warn("Could not set the local description for {}, dropping it: {}",
+                                    Long.toUnsignedString(connectionId), throwable.toString());
+                                child.close();
                             }
-                            @Override public void onFailure(String error) { log.error("SetLocalDesc failed: {}", error); }
-                        });
-                    }
-                    @Override public void onFailure(String error) { log.error("CreateAnswer failed: {}", error); }
-                });
+                        }
+                        @Override public void onFailure(String error) { log.error("CreateAnswer failed: {}", error); }
+                    });
+                } catch (Throwable throwable) {
+                    log.warn("Could not answer connection {}, dropping it: {}",
+                        Long.toUnsignedString(connectionId), throwable.toString());
+                    child.close();
+                }
             }
             @Override public void onFailure(String error) { log.error("SetRemoteDesc failed: {}", error); }
         });
@@ -342,30 +355,47 @@ public class NetherNetServerChannel extends AbstractServerChannel {
 
         @Override
         public void onConnectionChange(RTCPeerConnectionState state) {
-            log.debug("Connection {} state changed: {}", Long.toUnsignedString(this.connectionId), state);
-            if (state == RTCPeerConnectionState.FAILED || state == RTCPeerConnectionState.CLOSED) {
-                if (child != null && child.isOpen()) {
-                    log.debug("Closing connection {} due to state change: {}", Long.toUnsignedString(this.connectionId), state);
-                    child.close();
+            // Native callback: contained like the others, so a failure while tearing a connection
+            // down cannot fail-fast the process.
+            try {
+                log.debug("Connection {} state changed: {}", Long.toUnsignedString(this.connectionId), state);
+                if (state == RTCPeerConnectionState.FAILED || state == RTCPeerConnectionState.CLOSED) {
+                    if (child != null && child.isOpen()) {
+                        log.debug("Closing connection {} due to state change: {}", Long.toUnsignedString(this.connectionId), state);
+                        child.close();
+                    }
+                    if (handshakeTimeout != null) {
+                        handshakeTimeout.cancel(false);
+                    }
                 }
-                if (handshakeTimeout != null) {
-                    handshakeTimeout.cancel(false);
-                }
+            } catch (Throwable throwable) {
+                log.debug("Could not handle the state change of connection {}: {}",
+                    Long.toUnsignedString(this.connectionId), throwable.toString());
             }
         }
 
         @Override
         public void onDataChannel(RTCDataChannel dataChannel) {
-            String label = dataChannel.getLabel();
-            log.debug("Received Data Channel: {}", label);
-            
-            if (NetherNetConstants.RELIABLE_CHANNEL_LABEL.equals(label)) {
-                this.reliable = dataChannel;
-            } else if (NetherNetConstants.UNRELIABLE_CHANNEL_LABEL.equals(label)) {
-                this.unreliable = dataChannel;
+            // Native callback, and the one that hands the peer over to Netty: checkDataChannels()
+            // allocates and fires down the pipeline, so plenty here can throw.
+            try {
+                String label = dataChannel.getLabel();
+                log.debug("Received Data Channel: {}", label);
+
+                if (NetherNetConstants.RELIABLE_CHANNEL_LABEL.equals(label)) {
+                    this.reliable = dataChannel;
+                } else if (NetherNetConstants.UNRELIABLE_CHANNEL_LABEL.equals(label)) {
+                    this.unreliable = dataChannel;
+                }
+
+                checkDataChannels();
+            } catch (Throwable throwable) {
+                log.warn("Could not accept a data channel for connection {}, dropping it: {}",
+                    Long.toUnsignedString(this.connectionId), throwable.toString());
+                if (child != null) {
+                    child.close();
+                }
             }
-            
-            checkDataChannels();
         }
         
         private void checkDataChannels() {

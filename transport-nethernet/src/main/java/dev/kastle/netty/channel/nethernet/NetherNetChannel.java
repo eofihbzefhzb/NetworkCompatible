@@ -266,7 +266,12 @@ public abstract class NetherNetChannel extends AbstractChannel {
                 ByteBuffer chunk = ByteBuffer.allocateDirect(1 + chunkSize);
                 chunk.put((byte) remaining);
 
-                framed.getBytes(offset, chunk);
+                // Absolute index, so it has to start from the reader index rather than from zero:
+                // readableBytes() above counts from the reader index, and mixing the two silently
+                // reads the wrong bytes for any buffer that arrives here partially consumed. That
+                // is never the case today, which is exactly what makes it a trap - this line is a
+                // no-op now and correct if a handler is ever inserted before us.
+                framed.getBytes(framed.readerIndex() + offset, chunk);
                 chunk.position(chunk.limit());
                 chunk.flip();
 

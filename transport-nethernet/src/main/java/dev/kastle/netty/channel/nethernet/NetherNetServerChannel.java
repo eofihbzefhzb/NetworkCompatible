@@ -174,27 +174,27 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                         public void onSuccess(RTCSessionDescription description) {
                             try {
                                 pc.setLocalDescription(description, new SetSessionDescriptionObserver() {
-                                @Override
-                                public void onSuccess() {
-                                    // Nothing may escape this method. It is invoked by native WebRTC
-                                    // code, and a Java exception left pending on the way back into C++
-                                    // takes the whole process down with a fail-fast abort rather than a
-                                    // stack trace. sendSignal throws as soon as the signaling channel
-                                    // drops, which is precisely what a flapping connection produces.
-                                    try {
-                                        log.trace("Sending Answer SDP for {}", Long.toUnsignedString(connectionId));
-                                        signaling.sendSignal(
-                                            remoteNetworkId,
-                                            NetherNetConstants.buildSignalConnectResponse(connectionId, serverIdentity.augmentAnswer(description.sdp))
-                                        );
-                                        pipeline().fireChannelRead(child);
-                                    } catch (Throwable throwable) {
-                                        log.warn("Could not answer connection {}, dropping it: {}",
-                                            Long.toUnsignedString(connectionId), throwable.toString());
-                                        child.close();
+                                    @Override
+                                    public void onSuccess() {
+                                        // Nothing may escape this method. It is invoked by native WebRTC
+                                        // code, and a Java exception left pending on the way back into C++
+                                        // takes the whole process down with a fail-fast abort rather than a
+                                        // stack trace. sendSignal throws as soon as the signaling channel
+                                        // drops, which is precisely what a flapping connection produces.
+                                        try {
+                                            log.trace("Sending Answer SDP for {}", Long.toUnsignedString(connectionId));
+                                            signaling.sendSignal(
+                                                remoteNetworkId,
+                                                NetherNetConstants.buildSignalConnectResponse(connectionId, serverIdentity.augmentAnswer(description.sdp))
+                                            );
+                                            pipeline().fireChannelRead(child);
+                                        } catch (Throwable throwable) {
+                                            log.warn("Could not answer connection {}, dropping it: {}",
+                                                Long.toUnsignedString(connectionId), throwable.toString());
+                                            child.close();
+                                        }
                                     }
-                                }
-                                @Override public void onFailure(String error) { log.error("SetLocalDesc failed: {}", error); }
+                                    @Override public void onFailure(String error) { log.error("SetLocalDesc failed: {}", error); }
                                 });
                             } catch (Throwable throwable) {
                                 log.warn("Could not set the local description for {}, dropping it: {}",
@@ -263,13 +263,39 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         if (host == null || host.isEmpty()) {
             return false;
         }
-        // In an ICE candidate line only an IPv6 literal can carry a colon.
+        // The candidate comes from the remote peer, so "looks numeric" is not enough: InetAddress only
+        // skips DNS for a literal it can actually parse, and falls back to resolving anything else.
+        // "999.1.1.1" or "zz:1" would each block this signaling callback on a lookup - and a peer
+        // could send as many of those as it liked.
+
+        // In an ICE candidate line only an IPv6 literal can carry a colon. Hex digits, colons and
+        // dots (for an embedded IPv4 tail) only: starting with one of those keeps InetAddress on its
+        // literal parser, which rejects a malformed address instead of resolving it.
         if (host.indexOf(':') >= 0) {
+            for (int i = 0; i < host.length(); i++) {
+                char c = host.charAt(i);
+                if (Character.digit(c, 16) < 0 && c != ':' && c != '.') {
+                    return false;
+                }
+            }
             return true;
         }
-        for (int i = 0; i < host.length(); i++) {
-            char c = host.charAt(i);
-            if ((c < '0' || c > '9') && c != '.') {
+        // IPv4: exactly four decimal octets, each 0-255.
+        String[] octets = host.split("\\.", -1);
+        if (octets.length != 4) {
+            return false;
+        }
+        for (String octet : octets) {
+            if (octet.isEmpty() || octet.length() > 3) {
+                return false;
+            }
+            for (int i = 0; i < octet.length(); i++) {
+                char c = octet.charAt(i);
+                if (c < '0' || c > '9') {
+                    return false;
+                }
+            }
+            if (Integer.parseInt(octet) > 255) {
                 return false;
             }
         }

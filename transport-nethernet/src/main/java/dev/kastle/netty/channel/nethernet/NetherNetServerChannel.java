@@ -268,10 +268,14 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         // "999.1.1.1" or "zz:1" would each block this signaling callback on a lookup - and a peer
         // could send as many of those as it liked.
 
-        // In an ICE candidate line only an IPv6 literal can carry a colon. Hex digits, colons and
-        // dots (for an embedded IPv4 tail) only: starting with one of those keeps InetAddress on its
-        // literal parser, which rejects a malformed address instead of resolving it.
+        // In an ICE candidate line only an IPv6 literal can carry a colon. It must start with a hex
+        // digit or a colon - the only first characters that keep InetAddress on its literal parser,
+        // which rejects a malformed address instead of resolving it - and hold nothing but hex
+        // digits, colons and dots (for an embedded IPv4 tail).
         if (host.indexOf(':') >= 0) {
+            if (Character.digit(host.charAt(0), 16) < 0 && host.charAt(0) != ':') {
+                return false;
+            }
             for (int i = 0; i < host.length(); i++) {
                 char c = host.charAt(i);
                 if (Character.digit(c, 16) < 0 && c != ':' && c != '.') {

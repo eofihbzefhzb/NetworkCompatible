@@ -70,7 +70,7 @@ public abstract class NetherNetChannel extends AbstractChannel {
      * Candidates arrive in bursts and in no useful order, with "host" (the peer's LAN address)
      * usually first. Ranking rather than last-write-wins is what stops a later host candidate from
      * clobbering the public address we actually want.
-     *
+     * <p>
      * Synchronized because the rank check and the two assignments are a read-modify-write across
      * two fields: candidates that arrive concurrently could otherwise interleave so that a lower
      * ranked one is applied last, which is exactly the wrong address this method exists to avoid.

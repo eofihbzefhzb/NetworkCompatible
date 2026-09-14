@@ -66,3 +66,22 @@ jobs:
             nethernet = "${{ steps.version.outputs.version }}"
             ```
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the tag on JitPack
+        if: steps.check.outputs.exists == 'false'
+        # JitPack only builds a tag the first time something asks for it, and that request fails
+        # while the build is still running. Geyser's release build used to be that first request,
+        # and failed on it. Ask here and wait, so a green run means Geyser can resolve the version.
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          URL="https://jitpack.io/com/github/${{ github.repository }}/netty-transport-nethernet/$VERSION/netty-transport-nethernet-$VERSION.pom"
+          for attempt in $(seq 1 40); do
+            if curl -sf --max-time 60 -o /dev/null "$URL"; then
+              echo "JitPack has built $VERSION."
+              exit 0
+            fi
+            echo "JitPack is still building $VERSION (attempt $attempt/40)..."
+            sleep 15
+          done
+          echo "JitPack did not finish $VERSION in time: https://jitpack.io/com/github/${{ github.repository }}/$VERSION/build.log"
+          exit 1

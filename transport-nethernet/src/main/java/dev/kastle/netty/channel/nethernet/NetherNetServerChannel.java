@@ -126,11 +126,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
         ScheduledFuture<?> timeoutTask = eventLoop().schedule(() -> {
             if (!child.isActive()) {
                 log.warn("Connection {} timed out during handshake ({}s)", Long.toUnsignedString(connectionId), handshakeTimeoutSeconds);
-                // close() alone. The child owns this same RTCPeerConnection and closes it in
-                // doClose(), so closing it again here freed the native object twice and corrupted
-                // the process heap - a crash Windows reports as 0xc0000374 in ntdll, with no Java
-                // exception and no hs_err file, which is why it looked like the JVM simply vanished.
-                child.close();
+                // The child alone. It owns this same RTCPeerConnection and closes it in doClose(), so
+                // closing it again here freed the native object twice and corrupted the process
+                // heap - a crash Windows reports as 0xc0000374 in ntdll, with no Java exception and
+                // no hs_err file, which is why it looked like the JVM simply vanished.
+                dropConnection(child);
             }
         }, handshakeTimeoutSeconds, TimeUnit.SECONDS);
         observer.setHandshakeTimeout(timeoutTask);
@@ -157,7 +157,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 }
                 case NetherNetConstants.RTC_NEGOTIATION_CONNECT_ERROR -> {
                     log.debug("Received CONNECT_ERROR for {}", Long.toUnsignedString(connectionId));
-                    child.close();
+                    dropConnection(child);
                 }
             }
         });
@@ -187,11 +187,11 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                                                 remoteNetworkId,
                                                 NetherNetConstants.buildSignalConnectResponse(connectionId, serverIdentity.augmentAnswer(description.sdp))
                                             );
-                                            pipeline().fireChannelRead(child);
+                                            handOff(child);
                                         } catch (Throwable throwable) {
                                             log.warn("Could not answer connection {}, dropping it: {}",
                                                 Long.toUnsignedString(connectionId), throwable.toString());
-                                            child.close();
+                                            dropConnection(child);
                                         }
                                     }
                                     @Override public void onFailure(String error) { log.error("SetLocalDesc failed: {}", error); }
@@ -199,7 +199,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                             } catch (Throwable throwable) {
                                 log.warn("Could not set the local description for {}, dropping it: {}",
                                     Long.toUnsignedString(connectionId), throwable.toString());
-                                child.close();
+                                dropConnection(child);
                             }
                         }
                         @Override public void onFailure(String error) { log.error("CreateAnswer failed: {}", error); }
@@ -207,11 +207,58 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 } catch (Throwable throwable) {
                     log.warn("Could not answer connection {}, dropping it: {}",
                         Long.toUnsignedString(connectionId), throwable.toString());
-                    child.close();
+                    dropConnection(child);
                 }
             }
             @Override public void onFailure(String error) { log.error("SetRemoteDesc failed: {}", error); }
         });
+    }
+
+    /**
+     * Fires an answered connection down this pipeline, where the bootstrap accepts and registers it.
+     * <p>
+     * On the event loop, like dropConnection(), so the two cannot interleave: a connection dropped
+     * before this runs is never handed over, and one handed over is dropped through its normal close.
+     */
+    private void handOff(NetherNetChildChannel child) {
+        eventLoop().execute(() -> {
+            if (child.isOpen()) {
+                child.handedOff = true;
+                pipeline().fireChannelRead(child);
+            }
+        });
+    }
+
+    /**
+     * Drops a connection whether or not it has been handed to the pipeline yet. Never throws.
+     * <p>
+     * A child is only registered with an event loop once the bootstrap has accepted it. Before that,
+     * close() throws "channel not registered to an event loop" without ever calling doClose(), so the
+     * peer connection the child owns stays open and its signal handler stays installed - and thrown
+     * from a native callback, that exception takes the process down. A child that was never handed
+     * over is therefore registered here first, which gives it the normal close path: the peer
+     * connection freed exactly once, the signal handler removed through closeFuture().
+     */
+    private void dropConnection(NetherNetChildChannel child) {
+        try {
+            eventLoop().execute(() -> {
+                try {
+                    if (child.handedOff) {
+                        child.close();
+                    } else if (child.isOpen()) {
+                        eventLoop().register(child).addListener(future -> {
+                            if (future.isSuccess()) {
+                                child.close();
+                            }
+                        });
+                    }
+                } catch (Throwable throwable) {
+                    log.debug("Could not close a NetherNet connection: {}", throwable.toString());
+                }
+            });
+        } catch (Throwable throwable) {
+            log.debug("Could not close a NetherNet connection: {}", throwable.toString());
+        }
     }
 
     /**
@@ -392,7 +439,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 if (state == RTCPeerConnectionState.FAILED || state == RTCPeerConnectionState.CLOSED) {
                     if (child != null && child.isOpen()) {
                         log.debug("Closing connection {} due to state change: {}", Long.toUnsignedString(this.connectionId), state);
-                        child.close();
+                        dropConnection(child);
                     }
                     if (handshakeTimeout != null) {
                         handshakeTimeout.cancel(false);
@@ -423,7 +470,7 @@ public class NetherNetServerChannel extends AbstractServerChannel {
                 log.warn("Could not accept a data channel for connection {}, dropping it: {}",
                     Long.toUnsignedString(this.connectionId), throwable.toString());
                 if (child != null) {
-                    child.close();
+                    dropConnection(child);
                 }
             }
         }

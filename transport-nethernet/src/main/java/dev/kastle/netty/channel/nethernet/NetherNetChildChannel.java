@@ -9,6 +9,12 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 
 public class NetherNetChildChannel extends NetherNetChannel {
+    /**
+     * Set once the server channel has fired this channel down its pipeline for the bootstrap to
+     * register. Only read and written on the server channel's event loop.
+     */
+    boolean handedOff;
+
     public NetherNetChildChannel(Channel parent, RTCPeerConnection peerConnection, InetSocketAddress remote, InetSocketAddress local) {
         super(parent, remote, local);
         this.peerConnection = peerConnection;

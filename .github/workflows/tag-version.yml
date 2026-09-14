@@ -5,7 +5,8 @@ name: Tag Version
 # JitPack serves the artifact under the tag name, and Geyser resolves it by that exact
 # string in gradle/libs.versions.toml. A forgotten tag is therefore silent: Geyser keeps
 # building against the previous transport and the change simply never ships. Tagging here
-# means bumping `version=` is the only manual step.
+# means bumping `version=` is the only manual step on this side; Geyser's `nethernet =` still
+# has to be bumped to the new tag.
 on:
   push:
     branches:

@@ -222,9 +222,17 @@ public class NetherNetServerChannel extends AbstractServerChannel {
      */
     private void handOff(NetherNetChildChannel child) {
         eventLoop().execute(() -> {
-            if (child.isOpen()) {
+            if (!child.isOpen()) {
+                return;
+            }
+            if (isOpen()) {
                 child.handedOff = true;
                 pipeline().fireChannelRead(child);
+            } else {
+                // This server channel was closed after the answer went out, as a signaling reload
+                // does. Its pipeline is already torn down and would discard the child unregistered,
+                // leaving the peer connection open on a factory its owner may be about to free.
+                closeUnregistered(child);
             }
         });
     }
@@ -242,20 +250,34 @@ public class NetherNetServerChannel extends AbstractServerChannel {
     private void dropConnection(NetherNetChildChannel child) {
         try {
             eventLoop().execute(() -> {
+                if (!child.handedOff) {
+                    closeUnregistered(child);
+                    return;
+                }
                 try {
-                    if (child.handedOff) {
-                        child.close();
-                    } else if (child.isOpen()) {
-                        eventLoop().register(child).addListener(future -> {
-                            if (future.isSuccess()) {
-                                child.close();
-                            }
-                        });
-                    }
+                    child.close();
                 } catch (Throwable throwable) {
                     log.debug("Could not close a NetherNet connection: {}", throwable.toString());
                 }
             });
+        } catch (Throwable throwable) {
+            log.debug("Could not close a NetherNet connection: {}", throwable.toString());
+        }
+    }
+
+    /**
+     * Registers a child that was never handed over, then closes it; see dropConnection(). Runs on the
+     * event loop and never throws.
+     */
+    private void closeUnregistered(NetherNetChildChannel child) {
+        try {
+            if (child.isOpen()) {
+                eventLoop().register(child).addListener(future -> {
+                    if (future.isSuccess()) {
+                        child.close();
+                    }
+                });
+            }
         } catch (Throwable throwable) {
             log.debug("Could not close a NetherNet connection: {}", throwable.toString());
         }

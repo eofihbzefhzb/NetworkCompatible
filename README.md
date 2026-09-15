@@ -4,8 +4,8 @@
 
 This fork carries fixes to `netty-transport-nethernet` for the
 [Geyser fork's portal bridge](https://github.com/eofihbzefhzb/Geyser), which accepts Bedrock
-players' NetherNet connections when they join from the Xbox friends list. Only
-`transport-nethernet` is changed; `transport-raknet` is upstream's.
+players' NetherNet connections when they join from the Xbox friends list. The only code changed is
+in `transport-nethernet`; `transport-raknet` is upstream's.
 
 ### The three forks
 
@@ -25,11 +25,14 @@ Each README lists what its own fork changes. The setup guide for the whole stack
   Relay and `.local` candidates are ignored, and a candidate never triggers a DNS lookup.
 - **Crashes:** an exception in a native WebRTC callback is caught instead of aborting the JVM. A
   handshake timeout no longer frees the peer connection twice. A connection dropped before Netty
-  registered it is closed properly, including when the server channel has already closed.
-- **Leaks:** the reassembly buffer is released when a connection closes. A server channel only
-  disposes a `PeerConnectionFactory` it created itself. Pending signaling requests fail instead of
-  waiting forever when the websocket drops or the request was never sent.
-- **Outbound segments** are read from the buffer's reader index.
+  registered it is closed properly, including when the server channel has already closed. A server
+  channel only disposes a `PeerConnectionFactory` it created itself, so a factory the caller
+  supplied is never freed while its connections still use it.
+- **Leaks:** the reassembly buffer is released when a connection closes. Signaling requests still
+  waiting for a reply fail when the websocket drops, instead of waiting forever, and a request that
+  could not be sent is no longer kept.
+- **Outbound segments** are read from the buffer's reader index. A latent fix: nothing hands the
+  channel a partly read buffer today.
 
 ### Versions and releases
 
@@ -40,7 +43,7 @@ Each README lists what its own fork changes. The setup guide for the whole stack
 - Geyser uses a new version only once `nethernet =` in its `gradle/libs.versions.toml` is set to
   that tag.
 - Upstream's Maven Central `publish.yml` runs only when started by hand; it needs credentials a
-  fork does not have.
+  fork does not have. `jitpack.yml` builds with JDK 21.0.5.
 
 ```kotlin
 repositories {
